@@ -466,38 +466,25 @@ void loop() {
   }  else  {
     altRead = true;
     if ( altHold ) {
-      calculate_alt_pid();
-      Serial.println("HOLD IP SP TH UP");
-             Serial.println(pid_alt_input);
-             Serial.println(pid_alt_setpoint);
-               Serial.println(pid_output_alt);
-             
     }  else {
-
-     
-      if ( pid_alt_index < 250 ) {
-        calculate_alt_pid();
-         if ( pid_alt_index == 249 )    Serial.println(pid_output_alt);
-        pid_last_250_alt_d_error += pid_last_alt_d_error;
-        receiver_input_channel_3_last_250 += receiver_input_channel_3;
-      } else {
-           
-        pid_alt_input = pid_alt_setpoint;
-        pid_last_250_alt_d_error /= 250;
-             receiver_input_channel_3_last_250 /= 250;
-        if (pid_last_250_alt_d_error < 0 ) pid_last_250_alt_d_error*=-1;
-        if ( (pid_last_250_alt_d_error < pid_last_250_alt_d_error_best) && ( pid_alt_setpoint <  (pid_alt_ground - 1.85) ) ) {
-      
-          pid_last_250_alt_d_error_best = pid_last_250_alt_d_error;
-          pid_alt_throttle = receiver_input_channel_3_last_250 ;
-        }
-      
+        if ( pid_alt_index < 250 ) {
+          calculate_alt_pid();
+          pid_last_250_alt_d_error += pid_last_alt_d_error;
+          receiver_input_channel_3_last_250 += receiver_input_channel_3;
+      } else {     
+          pid_alt_input = pid_alt_setpoint;
+          pid_last_250_alt_d_error /= 250;
+          receiver_input_channel_3_last_250 /= 250;
+          if (pid_last_250_alt_d_error < 0 ) pid_last_250_alt_d_error*=-1;
+          if ( (pid_last_250_alt_d_error < pid_last_250_alt_d_error_best) && ( pid_alt_setpoint <  (pid_alt_ground - 1.85) ) ) {
+                pid_last_250_alt_d_error_best = pid_last_250_alt_d_error;
+                pid_alt_throttle = receiver_input_channel_3_last_250 ;
+          }
         pid_last_250_alt_d_error = 0;
         pid_output_alt_last_250 = 0;
         receiver_input_channel_3_last_250 = 0;
         pid_alt_index = 0;
-       
-      }
+     }
       pid_alt_index++;            
     }
   }
