@@ -8,7 +8,7 @@ and channel 5 in to pin 12 (channel 5 is the switch you want to use to enable th
 to use this i recomend to use GY-86 10DOF (it is possible to use MPU-6050 and MS5611 in 2 diffrent chips) 
 
 WARNING:
-this is still test mode it worked for me but might need an adjustment of PID values.
+this is still test mode it needs an adjustment of PID values (maybe also optimizing the code a bit).
 first time use:
 1.use up to 2 meters until you test it (it might crash as soon as you turn the Altitude Hold on...be rady to switch back to normal mode fast)
 2.hover for 5 sec then turn it on.
