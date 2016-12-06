@@ -19,12 +19,9 @@
 #include <Wire.h>                          //Include the Wire.h library so we can communicate with the gyro.
 #include <EEPROM.h>                        //Include the EEPROM.h library so we can store information onto the EEPROM
 
-
-
 //////////////////////////////////
 ////NATI ADDED
 /////////////////////////////////
-
 
 #define MS5611_ADDRESS                (0x77)
 #define MS5611_CMD_ADC_READ           (0x00)
@@ -33,10 +30,12 @@
 #define MS5611_CMD_CONV_D2            (0x50)
 #define MS5611_CMD_READ_PROM          (0xA2)
 #define  OVERSAMPLING                 (0x06)
+
 /// can be 0x00 0x02 0x04 0x06 0x08
+
 ///// enable faster analog read //////
 
-#define FASTADC 1
+#define FASTADC 0
 // defines for setting and clearing register bits
 #ifndef cbi
 #define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
@@ -46,22 +45,34 @@
 #endif
 ///// enable faster analog read  - end  //////
 
-float P,mAvge[14], T;
+
+int16_t baroHistTab[21]; // adding LPF
+int8_t baroHistIdx = 0;
+int32_t baroHigh;
+
+
+float mAvge[14], T , Pressure;
+boolean altHold;
+uint32_t D1 = 0;
+int64_t dT = 0; //int32_t dT;
+int64_t OFF = 0;
+int64_t SENS = 0;
+int32_t P = 0;
 uint16_t C[7];
-boolean altHold, altRead;
-uint32_t D1;
-int32_t dT;
-int64_t OFF, SENS;
+
+int altRead = 0;
 
 float alt_alpha = 0.7;
-float pid_p_gain_alt = 40.0;
-float pid_i_gain_alt = 10.6;
-float pid_d_gain_alt = 20.0;
+float pid_p_gain_alt = 13.0;
+float pid_i_gain_alt = 0.08;
+float pid_d_gain_alt = 36.0;
 int pid_max_alt = 400;
-float pid_i_mem_alt ,pid_alt_setpoint, pid_alt_input, pid_output_alt, pid_last_alt_d_error, pid_alt_ground, pid_alt_setpoint_last;
+float pid_i_mem_alt , pid_alt_setpoint, pid_alt_input, pid_output_alt, pid_last_alt_d_error, pid_alt_ground, pid_alt_setpoint_last;
 int long receiver_input_channel_3_last_250;
 int pid_alt_index, pid_alt_throttle, pressure_fillter_index;
 float pid_last_250_alt_d_error, pid_output_alt_last_250, pid_last_250_alt_d_error_best = 10;
+
+volatile int which_channel = (int)0;                                   // the heart of the ISR update and performance increase
 
 //////////////////////////////////
 ////END OF NATI ADDED
@@ -73,7 +84,7 @@ float pid_last_250_alt_d_error, pid_output_alt_last_250, pid_last_250_alt_d_erro
 float pid_p_gain_roll = 1.3;               //Gain setting for the roll P-controller
 float pid_i_gain_roll = 0.04;              //Gain setting for the roll I-controller
 float pid_d_gain_roll = 18.0;              //Gain setting for the roll D-controller
-int pid_max_roll = pid_max_alt;            //Maximum output of the PID-controller (+/-)
+int pid_max_roll = 400;                  //Maximum output of the PID-controller (+/-)
 
 float pid_p_gain_pitch = pid_p_gain_roll;  //Gain setting for the pitch P-controller.
 float pid_i_gain_pitch = pid_i_gain_roll;  //Gain setting for the pitch I-controller.
@@ -120,14 +131,12 @@ boolean gyro_angles_set;
 //Setup routine
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void setup() {
- // Serial.begin(57600);
+  //Serial.begin(57600);
   //Copy the EEPROM data for fast access data.
   for (start = 0; start <= 35; start++)eeprom_data[start] = EEPROM.read(start);
   start = 0;                                                                //Set start back to zero.
   gyro_address = eeprom_data[32];                                           //Store the gyro address in the variable.
-
   Wire.begin();                                                             //Start the I2C as master.
-
   TWBR = 12;                                                                //Set the I2C clock speed to 400kHz.
 
   //Arduino (Atmega) pins default to inputs, so they don't need to be explicitly declared as inputs.
@@ -143,7 +152,6 @@ void setup() {
   //The flight controller needs the MPU-6050 with gyro and accelerometer
   //If setup is completed without MPU-6050 stop the flight controller program
   if (eeprom_data[31] == 2 || eeprom_data[31] == 3)delay(10);
-
   set_gyro_registers();                                                     //Set the specific gyro registers.
 
   for (cal_int = 0; cal_int < 1250 ; cal_int ++) {                          //Wait 5 seconds before continuing.
@@ -196,58 +204,33 @@ void setup() {
   start = 0;                                                                //Set start back to 0.
 
 
-//////////////////////////////////
-////NATI ADDED
-/////////////////////////////////
+  //////////////////////////////////
+  ////NATI ADDED
+  /////////////////////////////////
 
   set_baro_registers();
   delay(5);
 
-
-  
-
-  while  ( mAvge[0] == 0 ) {
+  for (cal_int = 0; cal_int < 100 ; cal_int ++) {                          //Take 100 readings for calibration.
+    if (cal_int % 15 == 0)digitalWrite(13, !digitalRead(13));              //Change the led status to indicate calibration.
     initPressure();
-    delay(5);
+    delay(5.6);
     readPressure();
-      mAvge[0] = mAvge[1];
-      mAvge[1] = mAvge[2];
-      mAvge[2] = mAvge[3];
-      mAvge[3] = mAvge[4];
-      mAvge[4] = mAvge[5];
-      mAvge[5] = mAvge[6];
-      mAvge[6] = mAvge[7];
-      mAvge[7] = mAvge[8];
-      mAvge[8] = mAvge[9];
-      mAvge[9] = P;
-     
-  }
+    //**** Alt. Set Point stabilization PID ****
+    baroHistTab[baroHistIdx] = P / 10;
+    baroHigh += baroHistTab[baroHistIdx];
+    baroHigh -= baroHistTab[(baroHistIdx + 1) % 21];
+    baroHistIdx++;
+    if (baroHistIdx == 21) baroHistIdx = 0;
+    //EstAlt = baroHigh*10/(BARO_TAB_SIZE-1);
+    pid_alt_ground = pid_alt_ground * 0.6f + (baroHigh * 10.0f / (21 - 1)) * 0.4f; // additional LPF to reduce baro noise
 
-      mAvge[10] = mAvge[0];
-      mAvge[11] = mAvge[1];
-      for ( pressure_fillter_index = 2 ; pressure_fillter_index < 9 ; pressure_fillter_index += 2 ) {
-        if ( mAvge[pressure_fillter_index] < mAvge[pressure_fillter_index + 1] ) { //one comparison
-          mAvge[12] = mAvge[pressure_fillter_index];
-          mAvge[13] = mAvge[pressure_fillter_index + 1];
-        }
-        else {
-          mAvge[12] = mAvge[pressure_fillter_index + 1];
-          mAvge[13] = mAvge[pressure_fillter_index];
-        }
-        if (  mAvge[10] >  mAvge[12] ) { //one comparison
-          mAvge[10] =  mAvge[12];
-        }
-        if (  mAvge[11] <  mAvge[13] ) { //one comparison
-          mAvge[11] =  mAvge[13];
-        }
-      }
-      pid_alt_ground = mAvge[0] + mAvge[1] + mAvge[2] + mAvge[3] + mAvge[4] + mAvge[5] + mAvge[6] + mAvge[7] + mAvge[8] + mAvge[9] - mAvge[10] - mAvge[11] - 8;
-      pid_alt_ground /= 8;
+  }
 
   ////////// enable faster analog read - nati  ///////
 
 #if FASTADC
-  // set prescale to 16
+  set prescale to 16
   sbi(ADCSRA, ADPS2) ;
   cbi(ADCSRA, ADPS1) ;
   cbi(ADCSRA, ADPS0) ;
@@ -255,9 +238,9 @@ void setup() {
 
   ////////// enable faster analog read - nati end ///////
 
-//////////////////////////////////
-////END OF NATI ADDED
-/////////////////////////////////
+  //////////////////////////////////
+  ////END OF NATI ADDED
+  /////////////////////////////////
 
 
   //Load the battery voltage to the battery_voltage variable.
@@ -270,15 +253,16 @@ void setup() {
 
   //When everything is done, turn off the led.
   digitalWrite(13, LOW);                                                   //Turn off the warning led.
-  loop_timer = micros();                                                    //Set the timer for the next loop.
-//////////////////////////////////
-////NATI ADDED
-/////////////////////////////////
+  loop_timer = micros();
+  //Set the timer for the next loop.
+  //////////////////////////////////
+  ////NATI ADDED
+  /////////////////////////////////
   altRead = false;
   initPressure();
-//////////////////////////////////
-////END OF NATI ADDED
-/////////////////////////////////
+  //////////////////////////////////
+  ////END OF NATI ADDED
+  /////////////////////////////////
 
 }
 
@@ -387,124 +371,48 @@ void loop() {
     else if (receiver_input_channel_4 < 1492)pid_yaw_setpoint = (receiver_input_channel_4 - 1492) / 3.0;
   }
 
-
-
-
-
-
+  calculate_pid();                                                            //PID inputs are known. So we can calculate the pid output.
 
   //////////////////////////////NATI ALT HOLD//////////////////////////
-  if ( receiver_input[5] < 1500 && altHold)  altHold = false;  /// UN_ACTIVATE ALT HOLD
+  if ( receiver_input[5] < 1500 && altHold) altHold = false;  /// UN_ACTIVATE ALT HOLD
 
   if ( altRead ) {
     readPressure();
     if ( !altHold ) {
-      mAvge[0] = mAvge[1];
-      mAvge[1] = mAvge[2];
-      mAvge[2] = mAvge[3];
-      mAvge[3] = mAvge[4];
-      mAvge[4] = mAvge[5];
-      mAvge[5] = mAvge[6];
-      mAvge[6] = mAvge[7];
-      mAvge[7] = mAvge[8];
-      mAvge[8] = mAvge[9];
-      mAvge[9] = P;
-      mAvge[10] = mAvge[0];
-      mAvge[11] = mAvge[1];
-      for ( pressure_fillter_index = 2 ; pressure_fillter_index < 9 ; pressure_fillter_index += 2 ) {
-        if ( mAvge[pressure_fillter_index] < mAvge[pressure_fillter_index + 1] ) { //one comparison
-          mAvge[12] = mAvge[pressure_fillter_index];
-          mAvge[13] = mAvge[pressure_fillter_index + 1];
-        }
-        else {
-          mAvge[12] = mAvge[pressure_fillter_index + 1];
-          mAvge[13] = mAvge[pressure_fillter_index];
-        }
-        if (  mAvge[10] >  mAvge[12] ) { //one comparison
-          mAvge[10] =  mAvge[12];
-        }
-        if (  mAvge[11] <  mAvge[13] ) { //one comparison
-          mAvge[11] =  mAvge[13];
-        }
-      }
-      pid_alt_setpoint = mAvge[0] + mAvge[1] + mAvge[2] + mAvge[3] + mAvge[4] + mAvge[5] + mAvge[6] + mAvge[7] + mAvge[8] + mAvge[9];// - mAvge[10] - mAvge[11];
-      pid_alt_setpoint /= 10;
+      //**** Alt. Set Point stabilization PID ****
+      baroHistTab[baroHistIdx] = P / 10;
+      baroHigh += baroHistTab[baroHistIdx];
+      baroHigh -= baroHistTab[(baroHistIdx + 1) % 21];
+      baroHistIdx++;
+      if (baroHistIdx == 21) baroHistIdx = 0;
+      //EstAlt = baroHigh*10/(BARO_TAB_SIZE-1);
+      pid_alt_setpoint = pid_alt_setpoint * 0.6f + (baroHigh * 10.0f / (21 - 1)) * 0.4f; // additional LPF to reduce baro noise
+      pid_alt_input = pid_alt_setpoint;
     } else {
-      mAvge[0] = mAvge[1];
-      mAvge[1] = mAvge[2];
-      mAvge[2] = mAvge[3];
-      mAvge[3] = mAvge[4];
-      mAvge[4] = mAvge[5];
-      mAvge[5] = mAvge[6];
-      mAvge[6] = mAvge[7];
-      mAvge[7] = mAvge[8];
-      mAvge[8] = mAvge[9];
-      mAvge[9] = P;
-     mAvge[10] = mAvge[0];
-      mAvge[11] = mAvge[1];
-      for ( pressure_fillter_index = 2 ; pressure_fillter_index < 9 ; pressure_fillter_index += 2 ) {
-        if ( mAvge[pressure_fillter_index] < mAvge[pressure_fillter_index + 1] ) { //one comparison
-          mAvge[12] = mAvge[pressure_fillter_index];
-          mAvge[13] = mAvge[pressure_fillter_index + 1];
-        }
-        else {
-          mAvge[12] = mAvge[pressure_fillter_index + 1];
-          mAvge[13] = mAvge[pressure_fillter_index];
-        }
-        if (  mAvge[10] >  mAvge[12] ) { //one comparison
-          mAvge[10] =  mAvge[12];
-        }
-        if (  mAvge[11] <  mAvge[13] ) { //one comparison
-          mAvge[11] =  mAvge[13];
-        }
-      }
-      pid_alt_input = mAvge[0] + mAvge[1] + mAvge[2] + mAvge[3] + mAvge[4] + mAvge[5] + mAvge[6] + mAvge[7] + mAvge[8] + mAvge[9] ;//- mAvge[10] - mAvge[11];
-      pid_alt_input /= 10;
+      //**** Alt. Set Point stabilization PID ****
+      baroHistTab[baroHistIdx] = P / 10;
+      baroHigh += baroHistTab[baroHistIdx];
+      baroHigh -= baroHistTab[(baroHistIdx + 1) % 21];
+      baroHistIdx++;
+      if (baroHistIdx == 21) baroHistIdx = 0;
+      //EstAlt = baroHigh*10/(BARO_TAB_SIZE-1);
+      pid_alt_input = pid_alt_input * 0.6f + (baroHigh * 10.0f / 20) * 0.4f; // additional LPF to reduce baro nois
     }
     altRead = false;
     initPressure();
   }  else  {
     altRead = true;
-    if ( altHold ) {
-    }  else {
-        if ( pid_alt_index < 250 ) {
-          calculate_alt_pid();
-          pid_last_250_alt_d_error += pid_last_alt_d_error;
-          receiver_input_channel_3_last_250 += receiver_input_channel_3;
-      } else {     
-          pid_alt_input = pid_alt_setpoint;
-          pid_last_250_alt_d_error /= 250;
-          receiver_input_channel_3_last_250 /= 250;
-          if (pid_last_250_alt_d_error < 0 ) pid_last_250_alt_d_error*=-1;
-          if ( (pid_last_250_alt_d_error < pid_last_250_alt_d_error_best) && ( pid_alt_setpoint <  (pid_alt_ground - 1.85) ) ) {
-                pid_last_250_alt_d_error_best = pid_last_250_alt_d_error;
-                pid_alt_throttle = receiver_input_channel_3_last_250 ;
-          }
-        pid_last_250_alt_d_error = 0;
-        pid_output_alt_last_250 = 0;
-        receiver_input_channel_3_last_250 = 0;
-        pid_alt_index = 0;
-     }
-      pid_alt_index++;            
-    }
+    calculate_alt_pid();
   }
 
   if ( receiver_input[5] > 1500  && !altHold ) { /// ACTIVATE ALT HOLD
     altHold = true;
-    altRead = false;
-    pid_alt_input = 0;
     pid_output_alt = 0;
-    pid_last_250_alt_d_error = 0;
-    pid_output_alt_last_250 = 0;
-    pid_alt_index = 0;
     pid_i_mem_alt = 0;
     pid_last_alt_d_error = 0;
     pid_alt_throttle = receiver_input_channel_3;
   }
   //////////END NATI ALT HOLD//////////////////////////////////////////
-
-
-  calculate_pid();                                                            //PID inputs are known. So we can calculate the pid output.
 
 
   //The battery voltage is needed for compensation.
@@ -599,6 +507,87 @@ void loop() {
 //More information about this subroutine can be found in this video:
 //https://youtu.be/bENjl1KQbvo
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*
+  ISR(PCINT0_vect) {
+  current_time = micros();
+
+  switch (which_channel)
+  {
+    case 0:
+      break;
+
+    case 1:
+      receiver_input[1] = current_time - timer_1;                             //Channel 1 is current_time - timer_1.
+      which_channel = (int)0;
+      break;
+
+
+    case 2:
+      receiver_input[2] = current_time - timer_2;                             //Channel 2 is current_time - timer_2.
+      which_channel = (int)0;
+      break;
+
+
+    case 3:
+      receiver_input[3] = current_time - timer_3;                             //Channel 3 is current_time - timer_3.
+      which_channel = (int)0;
+      break;
+
+    case 4:
+      receiver_input[4] = current_time - timer_4;                             //Channel 4 is current_time - timer_4.
+      which_channel = (int)0;
+      break;
+
+
+    case 5:
+      receiver_input[5] = current_time - timer_5;                             //Channel 5 is current_time - timer_5.
+      which_channel = (int)0;
+      break;
+  }
+
+  // the actual interrup handlers start here, but upon return we parse through the above switch-case to streamline cleanups
+
+  //Channel 1=========================================
+  if (PINB & B00000001) {                                                   //Is input 8 high?
+    timer_1 = current_time;                                               //Set timer_1 to current_time.
+    which_channel = (int)1;
+    // return;
+  }
+
+  //Channel 2=========================================
+  if (PINB & B00000010 ) {                                                  //Is input 9 high?
+    timer_2 = current_time;                                               //Set timer_2 to current_time.
+    which_channel = (int)2;
+    //return;
+  }
+
+  //Channel 3=========================================
+  if (PINB & B00000100 ) {                                                  //Is input 10 high?
+    timer_3 = current_time;                                               //Set timer_3 to current_time.
+    which_channel = (int)3;
+    // return;
+  }
+
+  //Channel 4=========================================
+  if (PINB & B00001000 ) {                                                  //Is input 11 high?
+    timer_4 = current_time;                                               //Set timer_4 to current_time.
+    which_channel = (int)4;
+    // return;
+  }
+  if (PINB & B00010000 ) {                                                  //Is input 12 high?
+    timer_5 = current_time;                                               //Set timer_5 to current_time.
+    which_channel = (int)5;
+    // return;
+  }
+
+  }
+
+
+
+*/
+
+
 ISR(PCINT0_vect) {
   current_time = micros();
   //Channel 1=========================================
@@ -658,6 +647,8 @@ ISR(PCINT0_vect) {
     receiver_input[5] = current_time - timer_5;                             //Channel 5 is current_time - timer_5.
   }
 }
+
+
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //Subroutine for reading the gyro
@@ -857,7 +848,7 @@ void set_baro_registers()
     Wire.write(0xA2 + (i * 2));
     Wire.endTransmission();
 
-    Wire.requestFrom(MS5611_ADDRESS,12);
+    Wire.requestFrom(MS5611_ADDRESS, 12);
     delay(1);
     if (Wire.available())
     {
@@ -890,8 +881,8 @@ void readPressure(void) {
   Wire.requestFrom(MS5611_ADDRESS, 3);// send data n-bytes read
   while (Wire.available() < 3);
   D1 = ((int32_t)Wire.read() << 16) | ((int32_t)Wire.read() << 8) | Wire.read();
-  P  = ((int64_t)D1 * SENS / 2097152 - OFF) / 3276800.0;
-
+  P  = ((int64_t)D1 * SENS / 2097152 - OFF) / 32768;
+  //Pressure = (float)P / 100;
 
 
 }
