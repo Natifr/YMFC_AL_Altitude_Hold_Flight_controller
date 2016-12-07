@@ -395,7 +395,7 @@ void loop() {
     altRead = false;
     initPressure();
   }  else  {
-
+    P  = ((int64_t)D1 * SENS / 2097152 - OFF) / 32768;
     dT = ( 701 + (T - 27.0) * 100 ) *  8388608  / C[6]; /// this calc is here to save time while reading pressure
     OFF  = ((int64_t)C[2] << 16) + ((dT * C[4]) >> 7);
     SENS = ((int32_t)C[1] << 15) + ((dT * C[3]) >> 8);
@@ -822,6 +822,5 @@ void readPressure(void) {
   Wire.requestFrom(MS5611_ADDRESS, 3);// send data n-bytes read
   while (Wire.available() < 3);
   D1 = ((int32_t)Wire.read() << 16) | ((int32_t)Wire.read() << 8) | Wire.read();
-  P  = ((int64_t)D1 * SENS / 2097152 - OFF) / 32768;
 }
 
