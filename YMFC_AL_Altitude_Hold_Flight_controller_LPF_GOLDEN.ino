@@ -59,7 +59,6 @@ float pid_i_gain_alt = 0.08;
 float pid_d_gain_alt = 36.0;
 int pid_max_alt = 250;
 float pid_i_mem_alt , pid_alt_setpoint, pid_alt_input, pid_output_alt, pid_last_alt_d_error, pid_alt_ground;
-int long receiver_input_channel_3_last_250;
 int  pid_alt_throttle;
 
 
