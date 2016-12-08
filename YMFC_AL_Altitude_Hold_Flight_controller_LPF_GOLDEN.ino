@@ -1,3 +1,4 @@
+
 ///////////////////////////////////////////////////////////////////////////////////////
 //Terms of use
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -18,9 +19,10 @@
 #include <Wire.h>                          //Include the Wire.h library so we can communicate with the gyro.
 #include <EEPROM.h>                        //Include the EEPROM.h library so we can store information onto the EEPROM
 
-//////////////////////////////////
-////NATI ADDED
-/////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////////////////
+//Alt Hold - natifr@gmail.com
+///////////////////////////////////////////////////////////////////////////////////////
 
 #define MS5611_ADDRESS                (0x77)
 #define MS5611_CMD_ADC_READ           (0x00)
@@ -28,13 +30,9 @@
 #define MS5611_CMD_CONV_D1            (0x40)
 #define MS5611_CMD_CONV_D2            (0x50)
 #define MS5611_CMD_READ_PROM          (0xA2)
-#define  OVERSAMPLING                 (0x06)
+#define  OVERSAMPLING                 (0x06) /// can be 0x00 0x02 0x04 0x06 0x08
 
-/// can be 0x00 0x02 0x04 0x06 0x08
-
-///// enable faster analog read //////
-
-#define FASTADC 1
+#define FASTADC 1 ///// enable faster analog read //////
 // defines for setting and clearing register bits
 #ifndef cbi
 #define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
@@ -42,23 +40,19 @@
 #ifndef sbi
 #define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
 #endif
-///// enable faster analog read  - end  //////
-
 
 int16_t baroHistTab[21]; // adding LPF
 int8_t baroHistIdx = 0;
 int32_t baroHigh;
 
-
 float T;
 boolean altHold, altRead;
 uint32_t D1 = 0;
-int64_t dT = 0; //int32_t dT;
+int64_t dT = 0;
 int64_t OFF = 0;
 int64_t SENS = 0;
 int32_t P = 0;
 uint16_t C[7];
-
 
 float pid_p_gain_alt = 13.0;
 float pid_i_gain_alt = 0.08;
@@ -68,11 +62,10 @@ float pid_i_mem_alt , pid_alt_setpoint, pid_alt_input, pid_output_alt, pid_last_
 int long receiver_input_channel_3_last_250;
 int  pid_alt_throttle;
 
-//volatile int which_channel = (int)0;                                   // the heart of the ISR update and performance increase
 
-//////////////////////////////////
-////END OF NATI ADDED
-/////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////
+//End Alt Hold - natifr@gmail.com
+///////////////////////////////////////////////////////////////////////////////////////
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //PID gain and limit settings
@@ -151,10 +144,9 @@ void setup() {
   //If setup is completed without MPU-6050 stop the flight controller program
   if (eeprom_data[31] == 2 || eeprom_data[31] == 3)delay(10);
 
-
-  //////////////////////////////////
-  ////NATI ADDED
-  /////////////////////////////////
+  ///////////////////////////////////////////////////////////////////////////////////////
+  // Alt Hold - natifr@gmail.com
+  ///////////////////////////////////////////////////////////////////////////////////////
 
   set_baro_registers();
 
@@ -179,24 +171,19 @@ void setup() {
     baroHistIdx++;
     if (baroHistIdx == 21) baroHistIdx = 0;
     //EstAlt = baroHigh*10/(BARO_TAB_SIZE-1);
-    pid_alt_ground = pid_alt_ground * 0.6f + (baroHigh * 10.0f / 20 ) * 0.4f; // additional LPF to reduce baro noise
+    pid_alt_ground = pid_alt_ground * 0.6f + baroHigh * 0.2f ; // additional LPF to reduce baro noise
 
   }
 
-  ////////// enable faster analog read - nati  ///////
-
-#if FASTADC
-  //  set prescale to 16
-  sbi(ADCSRA, ADPS2) ;
+#if FASTADC                                                                     // enable faster analog read - nati  ///////
+  sbi(ADCSRA, ADPS2) ;                                                         //  set prescale to 16
   cbi(ADCSRA, ADPS1) ;
   cbi(ADCSRA, ADPS0) ;
 #endif
 
-  ////////// enable faster analog read - nati end ///////
-
-  //////////////////////////////////
-  ////END OF NATI ADDED
-  /////////////////////////////////
+  ///////////////////////////////////////////////////////////////////////////////////////
+  //End Alt Hold - natifr@gmail.com
+  ///////////////////////////////////////////////////////////////////////////////////////
 
 
 
@@ -266,17 +253,13 @@ void setup() {
 
   //When everything is done, turn off the led.
   digitalWrite(13, LOW);                                                   //Turn off the warning led.
-  loop_timer = micros();
-  //Set the timer for the next loop.
+  loop_timer = micros();                                                   //Set the timer for the next loop.
 
-  //////////////////////////////////
-  ////NATI ADDED
-  /////////////////////////////////
+
+
   altRead = false;
   initPressure();
-  //////////////////////////////////
-  ////END OF NATI ADDED
-  /////////////////////////////////
+
 
 }
 
@@ -388,9 +371,10 @@ void loop() {
 
   calculate_pid();                                                            //PID inputs are known. So we can calculate the pid output.
 
-  //////////////////////////////NATI ALT HOLD//////////////////////////
-  if ( receiver_input[5] < 1500 && altHold) altHold = false;  /// UN_ACTIVATE ALT HOLD
+  //ALT HOLD un activation
+  if ( receiver_input[5] < 1500 && altHold) altHold = false;                  /// UN_ACTIVATE ALT HOLD
 
+  //Baro read and calc
   if ( altRead ) {
     readPressure();
     altRead = false;
@@ -432,20 +416,16 @@ void loop() {
     battery_voltage = battery_voltage * 0.92 + (analogRead(0) + 65) * 0.09853;
     //Turn on the led if battery voltage is to low.
     if (battery_voltage < 1000 && battery_voltage > 600)digitalWrite(13, HIGH);
-    //Serial.println(pid_alt_setpoint);
-    //Serial.println(pid_alt_input);
-    // Serial.println(pid_output_alt);
-
   }
 
-  if ( receiver_input[5] > 1500  && !altHold ) { /// ACTIVATE ALT HOLD
+  //ALT HOLD activation
+  if ( receiver_input[5] > 1500  && !altHold ) {                             // ACTIVATE ALT HOLD
     altHold = true;
     pid_output_alt = 0;
     pid_i_mem_alt = 0;
     pid_last_alt_d_error = 0;
     pid_alt_throttle = receiver_input_channel_3;
   }
-  //////////END NATI ALT HOLD//////////////////////////////////////////
 
   throttle = receiver_input_channel_3;                                      //We need the throttle signal as a base signal.
   if ( altHold ) {
@@ -453,6 +433,7 @@ void loop() {
   } else {
     pid_output_alt = 0;                                                     //if no alt hold ignore pid_output.
   }
+
 
   if (start == 2) {                                                                           //The motors are started.
     if (throttle > 1800) throttle = 1800;                                                     //We need some room to keep full control at full throttle.
@@ -826,10 +807,10 @@ void readPressure(void) {
 }
 
 void finalizePressure(void) {
-  
-    P  = ((int64_t)D1 * SENS / 2097152 - OFF) / 32768;
-    dT = ( 701 + (T - 27.0) * 100 ) *  8388608  / C[6]; /// this calc is here to save time while reading pressure
-    OFF  = ((int64_t)C[2] << 16) + ((dT * C[4]) >> 7);
-    SENS = ((int32_t)C[1] << 15) + ((dT * C[3]) >> 8);
-  
+
+  P  = ((int64_t)D1 * SENS / 2097152 - OFF) / 32768;
+  dT = ( 701 + (T - 27.0) * 100 ) *  8388608  / C[6]; /// this calc is here to save time while reading pressure
+  OFF  = ((int64_t)C[2] << 16) + ((dT * C[4]) >> 7);
+  SENS = ((int32_t)C[1] << 15) + ((dT * C[3]) >> 8);
+
 }
