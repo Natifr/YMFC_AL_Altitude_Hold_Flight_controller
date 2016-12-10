@@ -54,10 +54,10 @@ int64_t SENS = 0;
 int32_t P = 0;
 uint16_t C[7];
 
-float pid_p_gain_alt = 13.0;
-float pid_i_gain_alt = 0.08;
-float pid_d_gain_alt = 36.0;
-int pid_max_alt = 250;
+float pid_p_gain_alt = 0.6;
+float pid_i_gain_alt = 0.8;
+float pid_d_gain_alt = 5.0;
+int pid_max_alt = 20;
 float pid_i_mem_alt , pid_alt_setpoint, pid_alt_input, pid_output_alt, pid_last_alt_d_error, pid_alt_ground;
 int  pid_alt_throttle;
 
@@ -170,7 +170,7 @@ void setup() {
     baroHistIdx++;
     if (baroHistIdx == 21) baroHistIdx = 0;
     //EstAlt = baroHigh*10/(BARO_TAB_SIZE-1);
-    pid_alt_ground = pid_alt_ground * 0.6f + baroHigh * 0.2f ; // additional LPF to reduce baro noise
+    pid_alt_ground = pid_alt_ground * 0.7f + baroHigh * 0.15f ; // additional LPF to reduce baro noise
 
   }
 
@@ -393,7 +393,7 @@ void loop() {
       baroHistIdx++;
       if (baroHistIdx == 21) baroHistIdx = 0;
       //EstAlt = baroHigh*10/(BARO_TAB_SIZE-1);
-      pid_alt_setpoint = pid_alt_setpoint * 0.6f + baroHigh * 0.2f; // additional LPF to reduce baro noise
+      pid_alt_setpoint = pid_alt_setpoint * 0.7f + baroHigh * 0.15f; // additional LPF to reduce baro noise
       pid_alt_input = pid_alt_setpoint;
 
     } else {
@@ -404,7 +404,7 @@ void loop() {
       baroHistIdx++;
       if (baroHistIdx == 21) baroHistIdx = 0;
       //EstAlt = baroHigh*10/(BARO_TAB_SIZE-1);
-      pid_alt_input = pid_alt_input * 0.6f + baroHigh  * 0.2f; // additional LPF to reduce baro nois (baroHigh * 10.0f / 20) * 0.4f;
+      pid_alt_input = pid_alt_input * 0.7f + baroHigh  * 0.15f; // additional LPF to reduce baro nois (baroHigh * 10.0f / (21-1)) * 0.3f;
 
     }
     altRead = true;
