@@ -1,4 +1,3 @@
-
 ///////////////////////////////////////////////////////////////////////////////////////
 //Terms of use
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -119,7 +118,7 @@ float roll_level_adjust, pitch_level_adjust;
 long acc_x, acc_y, acc_z, acc_total_vector;
 unsigned long timer_channel_1, timer_channel_2, timer_channel_3, timer_channel_4, timer_channel_5, esc_timer, esc_loop_timer, bmp_timer;
 unsigned long timer_1, timer_2, timer_3, timer_4, timer_5, current_time;
-unsigned long loop_timer,loop_timer_test;
+unsigned long loop_timer, loop_timer_test;
 double gyro_pitch, gyro_roll, gyro_yaw;
 double gyro_axis_cal[5];
 float pid_error_temp;
@@ -133,7 +132,7 @@ boolean gyro_angles_set;
 //Setup routine
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void setup() {
-   //Serial.begin(57600);
+  //Serial.begin(57600);
   //Copy the EEPROM data for fast access data.
   for (start = 0; start <= 35; start++)eeprom_data[start] = EEPROM.read(start);
   start = 0;                                                                //Set start back to zero.
@@ -418,8 +417,8 @@ void loop() {
 
   if (temp_read_index > 1800 && altRead == 1 ) altRead = 4;                   /// every 12ms * 2000 ( 24sec ) read TEMP
 
-//Serial.print(altRead);Serial.print(": ");
-//loop_timer_test = micros();
+  //Serial.print(altRead);Serial.print(": ");
+  //loop_timer_test = micros();
 
 
   //Baro read and calc
@@ -467,12 +466,15 @@ void loop() {
       pid_error_temp = gyro_axis_cal[4]  - acc_z ;
 
       if ( pid_error_temp < alt_acc_z_min_erro  &&  start == 2 && receiver_input_channel_3 > 1150 && receiver_input_channel_3 < 1350 ) {
-        pid_alt_throttle = receiver_input_channel_3 + pid_output_alt;
+        pid_alt_throttle = receiver_input_channel_3 ;
+        if ( altHold ) {
+          pid_alt_throttle += pid_output_alt;
+          pid_i_mem_alt_acc = 0;
+          pid_last_alt_d_error_acc = 0;
+          pid_i_mem_alt = 0;
+          pid_last_alt_d_error = 0;
+        }
         alt_acc_z_min_erro =  pid_error_temp;
-        pid_i_mem_alt_acc = 0;
-        pid_last_alt_d_error_acc = 0;
-        pid_i_mem_alt = 0;
-        pid_last_alt_d_error = 0;
       }
 
       pid_error_temp = pid_alt_input - pid_alt_setpoint;
@@ -546,8 +548,8 @@ void loop() {
 
   }
 
-//Serial.println(pid_alt_input);
-//if (altRead > 3 || temp_read_index == 0 ) Serial.println(micros()-loop_timer_test );
+  //Serial.println(pid_alt_input);
+  //if (altRead > 3 || temp_read_index == 0 ) Serial.println(micros()-loop_timer_test );
 
   //ALT HOLD activation
   if ( receiver_input[5] > 1500  && !altHold ) {                             // ACTIVATE ALT HOLD
@@ -568,7 +570,7 @@ void loop() {
     pid_output_alt = 0;                                                     //if no alt hold ignore pid_output.
     throttle = receiver_input_channel_3;                                    //We need the throttle signal as a base signal.
   }
- // Serial.println(pid_output_alt);
+  // Serial.println(pid_output_alt);
 
   if (start == 2) {                                                                           //The motors are started.
     if (throttle > 1800) throttle = 1800;                                                     //We need some room to keep full control at full throttle.
@@ -823,7 +825,7 @@ void calculate_alt_pid() {
 
 void calculate_alt_pid_acc() {
 
-  pid_error_temp = acc_z-gyro_axis_cal[4]  ;
+  pid_error_temp = acc_z - gyro_axis_cal[4]  ;
 
   pid_i_mem_alt_acc += pid_i_gain_alt_acc * pid_error_temp;
   if (pid_i_mem_alt_acc > pid_max_alt) pid_i_mem_alt_acc = pid_max_alt;
