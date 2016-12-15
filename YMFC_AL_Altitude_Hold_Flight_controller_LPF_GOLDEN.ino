@@ -30,7 +30,7 @@
 #define MS5611_CMD_CONV_D1            (0x40)
 #define MS5611_CMD_CONV_D2            (0x50)
 #define MS5611_CMD_READ_PROM          (0xA2)
-#define  OVERSAMPLING                 (0x06) /// can be 0x00 0x02 0x04 0x06 0x08
+#define  OVERSAMPLING                 (0x08)
 
 #define FASTADC 1 ///// enable faster analog read //////
 // defines for setting and clearing register bits
@@ -44,22 +44,36 @@
 int16_t baroHistTab[21]; // adding LPF
 int8_t baroHistIdx = 0;
 int32_t baroHigh;
-
 float T;
-boolean altHold, altRead;
+boolean altHold;
+
 uint32_t D1 = 0;
+uint32_t D2 = 0;
 int64_t dT = 0;
+int32_t TEMP = 0;
 int64_t OFF = 0;
 int64_t SENS = 0;
 int32_t P = 0;
 uint16_t C[7];
+
+int32_t T1    = 0;
+int64_t OFF1  = 0;
+int64_t SENS1 = 0;
+
+int temp_read_index;
 
 float pid_p_gain_alt = 0.6;
 float pid_i_gain_alt = 0.8;
 float pid_d_gain_alt = 5.0;
 int pid_max_alt = 20;
 float pid_i_mem_alt , pid_alt_setpoint, pid_alt_input, pid_output_alt, pid_last_alt_d_error, pid_alt_ground;
-int  pid_alt_throttle;
+int  altRead, pid_alt_throttle;
+
+
+float pid_p_gain_alt_acc = 0.05;
+float pid_i_gain_alt_acc = 0.002;
+float pid_d_gain_alt_acc = 0.0;
+float pid_i_mem_alt_acc , pid_alt_setpoint_acc, pid_alt_input_acc,  pid_last_alt_d_error_acc, alt_acc_z_min_erro = 100;
 
 
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -105,9 +119,9 @@ float roll_level_adjust, pitch_level_adjust;
 long acc_x, acc_y, acc_z, acc_total_vector;
 unsigned long timer_channel_1, timer_channel_2, timer_channel_3, timer_channel_4, timer_channel_5, esc_timer, esc_loop_timer, bmp_timer;
 unsigned long timer_1, timer_2, timer_3, timer_4, timer_5, current_time;
-unsigned long loop_timer;
+unsigned long loop_timer,loop_timer_test;
 double gyro_pitch, gyro_roll, gyro_yaw;
-double gyro_axis_cal[4];
+double gyro_axis_cal[5];
 float pid_error_temp;
 float pid_i_mem_roll, pid_roll_setpoint, gyro_roll_input, pid_output_roll, pid_last_roll_d_error;
 float pid_i_mem_pitch, pid_pitch_setpoint, gyro_pitch_input, pid_output_pitch, pid_last_pitch_d_error;
@@ -119,7 +133,7 @@ boolean gyro_angles_set;
 //Setup routine
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void setup() {
-  //Serial.begin(57600);
+   //Serial.begin(57600);
   //Copy the EEPROM data for fast access data.
   for (start = 0; start <= 35; start++)eeprom_data[start] = EEPROM.read(start);
   start = 0;                                                                //Set start back to zero.
@@ -157,12 +171,40 @@ void setup() {
   }
 
 
-  for (cal_int = 0; cal_int < 150 ; cal_int ++) {                          //Take 150 readings for calibration.
+  for (cal_int = 0; cal_int < 50 ; cal_int ++) {                          //Take 50 readings for calibration.
     if (cal_int % 15 == 0)digitalWrite(13, !digitalRead(13));              //Change the led status to indicate calibration.
+
+    initTemp();
+    delay(10);
+    readTemp();
+    delay(2);
     initPressure();
-    delay(5);
-    finalizePressure();
+    delay(10);
+
+    dT   = D2 - ((uint32_t)C[5] << 8);
+    OFF  = ((int64_t)C[2] << 16) + ((dT * C[4]) >> 7);
+    SENS = ((int32_t)C[1] << 15) + ((dT * C[3]) >> 8);
+
+    TEMP = (int64_t)dT * (int64_t)C[6] / 8388608 + 2000;
+
+    if (TEMP < 2000) // if temperature lower than 20 Celsius
+    {
+      T1    = 0;
+      OFF1  = 0;
+      SENS1 = 0;
+
+      T1    = pow(dT, 2) / 2147483648;
+      OFF1  = 5 * pow((TEMP - 2000), 2) / 2;
+      SENS1 = 5 * pow((TEMP - 2000), 2) / 4;
+
+
+      TEMP -= T1;
+      OFF -= OFF1;
+      SENS -= SENS1;
+    }
     readPressure();
+    P  = ((int64_t)D1 * SENS / 2097152 - OFF) / 32768;
+
     //**** Alt. Set Point stabilization PID ****
     baroHistTab[baroHistIdx] = P / 10;
     baroHigh += baroHistTab[baroHistIdx];
@@ -170,15 +212,11 @@ void setup() {
     baroHistIdx++;
     if (baroHistIdx == 21) baroHistIdx = 0;
     //EstAlt = baroHigh*10/(BARO_TAB_SIZE-1);
-    pid_alt_ground = pid_alt_ground * 0.7f + baroHigh * 0.15f ; // additional LPF to reduce baro noise
+    pid_alt_ground = pid_alt_ground * 0.6f + baroHigh * 0.2f ; // additional LPF to reduce baro noise
 
   }
 
-#if FASTADC                                                                     // enable faster analog read - nati  ///////
-  sbi(ADCSRA, ADPS2) ;                                                         //  set prescale to 16
-  cbi(ADCSRA, ADPS1) ;
-  cbi(ADCSRA, ADPS0) ;
-#endif
+
 
   ///////////////////////////////////////////////////////////////////////////////////////
   //End Alt Hold - natifr@gmail.com
@@ -202,6 +240,7 @@ void setup() {
     gyro_axis_cal[1] += gyro_axis[1];                                       //Ad roll value to gyro_roll_cal.
     gyro_axis_cal[2] += gyro_axis[2];                                       //Ad pitch value to gyro_pitch_cal.
     gyro_axis_cal[3] += gyro_axis[3];                                       //Ad yaw value to gyro_yaw_cal.
+    gyro_axis_cal[4] += acc_z;
     //We don't want the esc's to be beeping annoyingly. So let's give them a 1000us puls while calibrating the gyro.
     PORTD |= B11110000;                                                     //Set digital poort 4, 5, 6 and 7 high.
     delayMicroseconds(1000);                                                //Wait 1000us.
@@ -212,8 +251,9 @@ void setup() {
   gyro_axis_cal[1] /= 2000;                                                 //Divide the roll total by 2000.
   gyro_axis_cal[2] /= 2000;                                                 //Divide the pitch total by 2000.
   gyro_axis_cal[3] /= 2000;                                                 //Divide the yaw total by 2000.
+  gyro_axis_cal[4] /= 2000;                                                 //Divide the acc_z total by 2000.
 
-  PCICR |= (1 << PCIE0);                                                    //Set PCIE0 to enable PCMSK0 scan.
+  PCICR |= (1 << PCIE0);                                                       //Set PCIE0 to enable PCMSK0 scan.
   PCMSK0 |= (1 << PCINT0);                                                  //Set PCINT0 (digital input 8) to trigger an interrupt on state change.
   PCMSK0 |= (1 << PCINT1);                                                  //Set PCINT1 (digital input 9)to trigger an interrupt on state change.
   PCMSK0 |= (1 << PCINT2);                                                  //Set PCINT2 (digital input 10)to trigger an interrupt on state change.
@@ -222,7 +262,7 @@ void setup() {
 
 
   //Wait until the receiver is active and the throtle is set to the lower position.
-  while (receiver_input_channel_3 < 990 || receiver_input_channel_3 > 1020 || receiver_input_channel_4 < 1400) {
+  while (receiver_input_channel_3 < 990 || receiver_input_channel_3 > 1020 || receiver_input_channel_4 < 1400 || receiver_input[5] > 1500 ) {
     receiver_input_channel_3 = convert_receiver_channel(3);                 //Convert the actual receiver signals for throttle to the standard 1000 - 2000us
     receiver_input_channel_4 = convert_receiver_channel(4);                 //Convert the actual receiver signals for yaw to the standard 1000 - 2000us
     start ++;                                                               //While waiting increment start whith every loop.
@@ -250,16 +290,18 @@ void setup() {
   //The variable battery_voltage holds 1050 if the battery voltage is 10.5V.
   battery_voltage = (analogRead(0) + 65) * 1.2317;
 
+#if FASTADC                                                                     // enable faster analog read - nati  ///////
+  sbi(ADCSRA, ADPS2) ;                                                         //  set prescale to 16
+  cbi(ADCSRA, ADPS1) ;
+  cbi(ADCSRA, ADPS0) ;
+#endif
+
+  altRead = 2;
+  initPressure();
+
   //When everything is done, turn off the led.
   digitalWrite(13, LOW);                                                   //Turn off the warning led.
   loop_timer = micros();                                                   //Set the timer for the next loop.
-
-
-
-  altRead = false;
-  initPressure();
-
-
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -318,7 +360,7 @@ void loop() {
   //For starting the motors: throttle low and yaw left (step 1).
   if (receiver_input_channel_3 < 1050 && receiver_input_channel_4 < 1050)start = 1;
   //When yaw stick is back in the center position start the motors (step 2).
-  if (start == 1 && receiver_input_channel_3 < 1050 && receiver_input_channel_4 > 1450) {
+  if (start == 1 && receiver_input_channel_3 < 1050 && receiver_input_channel_4 > 1450 && receiver_input[5] < 1500) {
     start = 2;
 
     angle_pitch = angle_pitch_acc;                                          //Set the gyro pitch angle equal to the accelerometer pitch angle when the quadcopter is started.
@@ -371,68 +413,162 @@ void loop() {
   calculate_pid();                                                            //PID inputs are known. So we can calculate the pid output.
 
   //ALT HOLD un activation
-  if ( receiver_input[5] < 1500 && altHold) altHold = false;                  /// UN_ACTIVATE ALT HOLD
+  if ( receiver_input[5] < 1500 && altHold ) altHold = false;                  /// UN_ACTIVATE ALT HOLD
+
+
+  if (temp_read_index > 1800 && altRead == 1 ) altRead = 4;                   /// every 12ms * 2000 ( 24sec ) read TEMP
+
+//Serial.print(altRead);Serial.print(": ");
+//loop_timer_test = micros();
+
 
   //Baro read and calc
-  if ( altRead ) {
-    readPressure();
-    altRead = false;
-    initPressure();
-  }  else  {
-    P  = ((int64_t)D1 * SENS / 2097152 - OFF) / 32768;
-    dT = ( 701 + (T - 27.0) * 100 ) *  8388608  / C[6]; /// this calc is here to save time while reading pressure
-    OFF  = ((int64_t)C[2] << 16) + ((dT * C[4]) >> 7);
-    SENS = ((int32_t)C[1] << 15) + ((dT * C[3]) >> 8);
+  switch (altRead) {
 
+    case 1:
+      readPressure();
+      altRead = 2;
+      initPressure();
+      break;
 
-    if ( !altHold ) {
-      //**** Alt. Set Point stabilization PID ****
-      baroHistTab[baroHistIdx] = P / 10;
-      baroHigh += baroHistTab[baroHistIdx];
-      baroHigh -= baroHistTab[(baroHistIdx + 1) % 21];
-      baroHistIdx++;
-      if (baroHistIdx == 21) baroHistIdx = 0;
-      //EstAlt = baroHigh*10/(BARO_TAB_SIZE-1);
-      pid_alt_setpoint = pid_alt_setpoint * 0.7f + baroHigh * 0.15f; // additional LPF to reduce baro noise
-      pid_alt_input = pid_alt_setpoint;
+    case 2:
+      P  = ((int64_t)D1 * SENS / 2097152 - OFF) / 32768;
+      if ( !altHold ) {
 
-    } else {
-      //**** Alt. Set Point stabilization PID ****
-      baroHistTab[baroHistIdx] = P / 10;
-      baroHigh += baroHistTab[baroHistIdx];
-      baroHigh -= baroHistTab[(baroHistIdx + 1) % 21];
-      baroHistIdx++;
-      if (baroHistIdx == 21) baroHistIdx = 0;
-      //EstAlt = baroHigh*10/(BARO_TAB_SIZE-1);
-      pid_alt_input = pid_alt_input * 0.7f + baroHigh  * 0.15f; // additional LPF to reduce baro nois (baroHigh * 10.0f / (21-1)) * 0.3f;
+        //**** Alt. Set Point stabilization PID ****
+        baroHistTab[baroHistIdx] = P / 10;
+        baroHigh += baroHistTab[baroHistIdx];
+        baroHigh -= baroHistTab[(baroHistIdx + 1) % 21];
+        baroHistIdx++;
+        if (baroHistIdx == 21) baroHistIdx = 0;
+        //EstAlt = baroHigh*10/(BARO_TAB_SIZE-1);
+        pid_alt_setpoint = pid_alt_setpoint * 0.8f + baroHigh * 0.1f; // additional LPF to reduce baro noise
+        pid_alt_input = pid_alt_setpoint;
 
-    }
-    altRead = true;
-    calculate_alt_pid();
-    //The battery voltage is needed for compensation.
-    //A complementary filter is used to reduce noise.
-    //0.09853 = 0.08 * 1.2317.
-    battery_voltage = battery_voltage * 0.92 + (analogRead(0) + 65) * 0.09853;
-    //Turn on the led if battery voltage is to low.
-    if (battery_voltage < 1000 && battery_voltage > 600)digitalWrite(13, HIGH);
+      } else {
+
+        //**** Alt. Set Point stabilization PID ****
+        baroHistTab[baroHistIdx] = P / 10;
+        baroHigh += baroHistTab[baroHistIdx];
+        baroHigh -= baroHistTab[(baroHistIdx + 1) % 21];
+        baroHistIdx++;
+        if (baroHistIdx == 21) baroHistIdx = 0;
+        //EstAlt = baroHigh*10/(BARO_TAB_SIZE-1);
+        pid_alt_input = pid_alt_input * 0.6f + baroHigh  * 0.2f; // additional LPF to reduce baro nois (baroHigh * 10.0f / (21-1)) * 0.3f;
+
+      }
+      altRead = 3;
+      temp_read_index ++;
+      break;
+
+    case 3:
+      altRead = 1;
+
+      pid_error_temp = gyro_axis_cal[4]  - acc_z ;
+
+      if ( pid_error_temp < alt_acc_z_min_erro  &&  start == 2 && receiver_input_channel_3 > 1150 && receiver_input_channel_3 < 1350 ) {
+        pid_alt_throttle = receiver_input_channel_3 + pid_output_alt;
+        alt_acc_z_min_erro =  pid_error_temp;
+        pid_i_mem_alt_acc = 0;
+        pid_last_alt_d_error_acc = 0;
+        pid_i_mem_alt = 0;
+        pid_last_alt_d_error = 0;
+      }
+
+      pid_error_temp = pid_alt_input - pid_alt_setpoint;
+
+      if ( (-5 < pid_error_temp) && (pid_error_temp < 5) ) {
+        pid_i_mem_alt = 0;
+        pid_last_alt_d_error = 0;
+        calculate_alt_pid_acc();
+        pid_output_alt = pid_p_gain_alt_acc * pid_error_temp + pid_i_mem_alt_acc + pid_d_gain_alt_acc * (pid_error_temp - pid_last_alt_d_error_acc);
+        pid_last_alt_d_error_acc = pid_error_temp;
+      } else if ( (-10 < pid_error_temp) && (pid_error_temp < 10) ) {
+        calculate_alt_pid();
+        calculate_alt_pid_acc();
+        pid_output_alt *= 0.5;
+        pid_output_alt += (pid_p_gain_alt_acc * pid_error_temp + pid_i_mem_alt_acc + pid_d_gain_alt_acc * (pid_error_temp - pid_last_alt_d_error_acc)) * 0.5;
+        pid_last_alt_d_error_acc = pid_error_temp;
+      } else {
+        pid_i_mem_alt_acc = 0;
+        pid_last_alt_d_error_acc = 0;
+        calculate_alt_pid();
+      }
+
+      //The battery voltage is needed for compensation.
+      //A complementary filter is used to reduce noise.
+      //0.09853 = 0.08 * 1.2317.
+      battery_voltage = battery_voltage * 0.92 + (analogRead(0) + 65) * 0.09853;
+      //Turn on the led if battery voltage is to low.
+      if (battery_voltage < 1000 && battery_voltage > 600)digitalWrite(13, HIGH);
+      break;
+
+    case 4:
+      readPressure();
+      initTemp();
+      altRead = 5;
+      temp_read_index = 0;
+      break;
+
+    case 5:
+      altRead = 6;
+      break;
+
+    case 6:
+      altRead = 7;
+      break;
+
+    case 7:
+      readTemp();
+      altRead = 8;
+      break;
+
+    case 8:
+      initPressure();
+      dT   = D2 - ((uint32_t)C[5] << 8);
+      OFF  = ((int64_t)C[2] << 16) + ((dT * C[4]) >> 7);
+      SENS = ((int32_t)C[1] << 15) + ((dT * C[3]) >> 8);
+      TEMP = (int64_t)dT * (int64_t)C[6] / 8388608 + 2000;
+      if (TEMP < 2000) // if temperature lower than 20 Celsius
+      {
+        T1    = 0;
+        OFF1  = 0;
+        SENS1 = 0;
+        T1    = pow(dT, 2) / 2147483648;
+        OFF1  = 5 * pow((TEMP - 2000), 2) / 2;
+        SENS1 = 5 * pow((TEMP - 2000), 2) / 4;
+        TEMP -= T1;
+        OFF -= OFF1;
+        SENS -= SENS1;
+      }
+      altRead = 2;
+      break;
+
   }
+
+//Serial.println(pid_alt_input);
+//if (altRead > 3 || temp_read_index == 0 ) Serial.println(micros()-loop_timer_test );
 
   //ALT HOLD activation
   if ( receiver_input[5] > 1500  && !altHold ) {                             // ACTIVATE ALT HOLD
     altHold = true;
-    pid_output_alt = 0;
+    pid_i_mem_alt_acc = 0;
+    pid_last_alt_d_error_acc = 0;
     pid_i_mem_alt = 0;
     pid_last_alt_d_error = 0;
-    pid_alt_throttle = receiver_input_channel_3;
+    if ( alt_acc_z_min_erro == 100 ) pid_alt_throttle = receiver_input_channel_3;
   }
 
-  throttle = receiver_input_channel_3;                                      //We need the throttle signal as a base signal.
+
   if ( altHold ) {
     throttle = pid_alt_throttle;                                            //We need the throttle signal as a base signal of alt hold.
+    if (pid_output_alt > pid_max_alt)pid_output_alt = pid_max_alt;
+    else if (pid_output_alt < pid_max_alt * -1)pid_output_alt = pid_max_alt * -1;
   } else {
     pid_output_alt = 0;                                                     //if no alt hold ignore pid_output.
+    throttle = receiver_input_channel_3;                                    //We need the throttle signal as a base signal.
   }
-
+ // Serial.println(pid_output_alt);
 
   if (start == 2) {                                                                           //The motors are started.
     if (throttle > 1800) throttle = 1800;                                                     //We need some room to keep full control at full throttle.
@@ -604,7 +740,6 @@ void gyro_signalen() {
     gyro_axis[1] = Wire.read() << 8 | Wire.read();                          //Read high and low part of the angular data.
     gyro_axis[2] = Wire.read() << 8 | Wire.read();                          //Read high and low part of the angular data.
     gyro_axis[3] = Wire.read() << 8 | Wire.read();                          //Read high and low part of the angular data.
-    T = temperature / 340.00 + 36.53;
   }
 
   if (cal_int == 2000) {
@@ -670,25 +805,32 @@ void calculate_pid() {
 
   pid_last_yaw_d_error = pid_error_temp;
 
-
-
-
 }
 
 void calculate_alt_pid() {
 
   pid_error_temp = pid_alt_input - pid_alt_setpoint;
+
   pid_i_mem_alt += pid_i_gain_alt * pid_error_temp;
   if (pid_i_mem_alt > pid_max_alt) pid_i_mem_alt = pid_max_alt;
   else if (pid_i_mem_alt < pid_max_alt * -1)pid_i_mem_alt = pid_max_alt * -1;
 
   pid_output_alt = pid_p_gain_alt * pid_error_temp + pid_i_mem_alt + pid_d_gain_alt * (pid_error_temp - pid_last_alt_d_error);
-  if (pid_output_alt > pid_max_alt)pid_output_alt = pid_max_alt;
-  else if (pid_output_alt < pid_max_alt * -1)pid_output_alt = pid_max_alt * -1;
-
   pid_last_alt_d_error = pid_error_temp;
 
 }
+
+
+void calculate_alt_pid_acc() {
+
+  pid_error_temp = acc_z-gyro_axis_cal[4]  ;
+
+  pid_i_mem_alt_acc += pid_i_gain_alt_acc * pid_error_temp;
+  if (pid_i_mem_alt_acc > pid_max_alt) pid_i_mem_alt_acc = pid_max_alt;
+  else if (pid_i_mem_alt_acc < pid_max_alt * -1)pid_i_mem_alt_acc = pid_max_alt * -1;
+
+}
+
 //This part converts the actual receiver signals to a standardized 1000 – 1500 – 2000 microsecond value.
 //The stored data in the EEPROM is used.
 int convert_receiver_channel(byte function) {
@@ -790,26 +932,33 @@ void set_baro_registers()
 
 void initPressure(void) {
   Wire.beginTransmission(MS5611_ADDRESS); // start transmission to device
-  Wire.write(MS5611_CMD_CONV_D1  + OVERSAMPLING );  // write data
+  Wire.write(0x48);  // write data
   Wire.endTransmission(); // end transmission
+}
+
+
+void initTemp(void) {
+  Wire.beginTransmission(MS5611_ADDRESS); // start transmission to device
+  Wire.write(0x58);  // write data
+  Wire.endTransmission(); // end transmission
+}
+
+
+void readTemp(void) {
+  Wire.beginTransmission(MS5611_ADDRESS); // start transmission to device
+  Wire.write((byte) 0x00);
+
+  Wire.endTransmission(); // end transmission
+  Wire.requestFrom(MS5611_ADDRESS, (int)3);
+  if (Wire.available() == 3)  D2 = ((int32_t)Wire.read() << 16) | ((int32_t)Wire.read() << 8) | Wire.read();
 }
 
 void readPressure(void) {
   Wire.beginTransmission(MS5611_ADDRESS); // start transmission to device
-  Wire.write (MS5611_CMD_ADC_READ);
+  Wire.write((byte) 0x00);
   Wire.endTransmission(); // end transmission
 
-
-  Wire.requestFrom(MS5611_ADDRESS, 3);// send data n-bytes read
-  while (Wire.available() < 3);
-  D1 = ((int32_t)Wire.read() << 16) | ((int32_t)Wire.read() << 8) | Wire.read();
-}
-
-void finalizePressure(void) {
-
-  P  = ((int64_t)D1 * SENS / 2097152 - OFF) / 32768;
-  dT = ( 701 + (T - 27.0) * 100 ) *  8388608  / C[6]; /// this calc is here to save time while reading pressure
-  OFF  = ((int64_t)C[2] << 16) + ((dT * C[4]) >> 7);
-  SENS = ((int32_t)C[1] << 15) + ((dT * C[3]) >> 8);
+  Wire.requestFrom(MS5611_ADDRESS, (int)3);
+  if (Wire.available() == 3)  D1 = ((int32_t)Wire.read() << 16) | ((int32_t)Wire.read() << 8) | Wire.read();
 
 }
